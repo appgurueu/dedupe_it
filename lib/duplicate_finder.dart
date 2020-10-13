@@ -4,7 +4,7 @@ import 'package:hash/hash.dart';
 
 extension FileExtension on FileSystemEntity {
   String get name {
-    return this?.path?.split("/")?.last;
+    return this?.path?.split('/')?.last;
   }
 }
 
@@ -54,10 +54,19 @@ class DuplicateParentFolder extends DuplicateContainer {
       : super(name: name, sizeOfDuplicates: sizeOfDuplicates);
 }
 
+class CancelledException implements Exception {
+  CancelledException() : super();
+}
+
 class DuplicateFinder {
   Directory directory;
   DuplicateParentFolder duplicateParentFolder;
   Map<String, SourceAndDuplicates> files;
+  bool cancelled = false;
+  cancel() {
+    assert(!cancelled);
+    cancelled = true;
+  }
 
   DuplicateFinder(Directory directory) {
     this.directory = directory;
@@ -69,21 +78,27 @@ class DuplicateFinder {
   findDuplicates() async {
     await for (FileSystemEntity entity
         in directory.list(recursive: true, followLinks: false)) {
-      if (entity is File) {
-        File file = entity;
-        var hash = MD5();
-        await file.openRead().listen(hash.update).asFuture();
-        String digest = "";
-        hash
-            .digest()
-            .forEach((int byte) => digest += String.fromCharCode(byte));
+      if (cancelled) return;
+      if (!(entity is File)) continue;
+      File file = entity;
+      var hash = MD5();
+      var stream = file.openRead();
+      bool isEmpty = true;
+      await stream.listen((List<int> data) {
+        if (cancelled || data.length == 0) return;
+        isEmpty = false;
+        hash.update(data);
+      }).asFuture();
+      if (cancelled) return;
+      if (isEmpty) continue;
+      String digest = '';
+      hash.digest().forEach((int byte) => digest += String.fromCharCode(byte));
 
-        FileStat stat = file.statSync();
-        if (files.containsKey(digest))
-          await files[digest].addFile(file, stat);
-        else
-          files[digest] = SourceAndDuplicates(file, stat);
-      }
+      FileStat stat = file.statSync();
+      if (files.containsKey(digest))
+        await files[digest].addFile(file, stat);
+      else
+        files[digest] = SourceAndDuplicates(file, stat);
     }
   }
 
@@ -96,7 +111,7 @@ class DuplicateFinder {
         for (File duplicate in element.duplicates) {
           String relative = duplicate.path.substring(directory.path.length + 1);
           DuplicateParentFolder parentFolder = duplicateParentFolder;
-          List<String> parts = relative.split("/");
+          List<String> parts = relative.split('/');
           String filename = parts.removeLast();
           for (String part in parts) {
             DuplicateParentFolder newParentFolder = DuplicateParentFolder(
